@@ -5,9 +5,22 @@ import 'package:wren_dart/src/enums.dart';
 import './generated_bindings.dart';
 
 class Configuration {
-  Pointer<NativeFunction<WrenWriteFn>>? writeFn;
+  WrenReallocateFn? reallocFn;
+  WrenResolveModuleFn? resolveModuleFn;
+  WrenLoadModuleFn? loadModuleFn;
+  WrenBindForeignMethodFn? bindForeignMethodFn;
+  WrenBindForeignClassFn? bindForeignClassFn;
+  WrenWriteFn? writeFn;
+  WrenErrorFn? errFn;
 
-  Configuration({this.writeFn});
+  Configuration(
+      {this.writeFn,
+      this.errFn,
+      this.reallocFn,
+      this.resolveModuleFn,
+      this.loadModuleFn,
+      this.bindForeignMethodFn,
+      this.bindForeignClassFn});
 }
 
 class VM {
@@ -20,6 +33,9 @@ class VM {
     _bindings.wrenInitConfiguration(wrenConfig);
     if (config.writeFn != null) {
       wrenConfig.ref.writeFn = config.writeFn!;
+    }
+    if (config.errFn != null) {
+      wrenConfig.ref.errorFn = config.errFn!;
     }
     _ptrVm = _bindings.wrenNewVM(wrenConfig);
   }
@@ -54,7 +70,7 @@ class VM {
   /// Returns the number of slots available to the current foreign method.
   int get slotCount => _bindings.wrenGetSlotCount(_ptrVm);
 
-  /// Stores the [T] [value] in slot [index].
+  /// Stores the [T] (double, bool or String) typed [value] in slot [index].
   void setSlot<T>(int index, T value) {
     if (T == double) {
       _bindings.wrenSetSlotDouble(_ptrVm, index, value as double);
@@ -73,12 +89,22 @@ class VM {
     _bindings.wrenSetSlotNull(_ptrVm, index);
   }
 
+  /// Stores a new empty list at [index].
+  void setSlotNewList(int index) {
+    _bindings.wrenSetSlotNewList(_ptrVm, index);
+  }
+
+  /// Stores a new empty map at [index].
+  void setSlotNewMap(int index) {
+    _bindings.wrenSetSlotNewMap(_ptrVm, index);
+  }
+
   /// Gets the type of the slot at [index]
   WType getSlotType(int index) {
     return WType.values[_bindings.wrenGetSlotType(_ptrVm, index)];
   }
 
-  /// Gets the value of the slot at [index] as a [T]
+  /// Gets the value of the slot at [index] as a [T] (double, bool or String)
   T getSlot<T>(int index) {
     if (T == double) {
       if (getSlotType(index) != WType.number) {
@@ -101,5 +127,12 @@ class VM {
     } else {
       throw ArgumentError('Invalid type for getSlot');
     }
+  }
+
+  /// Looks up the top level variable with [name] in resolved [module] and stores
+  /// it in [variableOutSlot].
+  void getVariable(String module, String name, int variableOutSlot) {
+    _bindings.wrenGetVariable(_ptrVm, module.toNativeUtf8().cast(),
+        name.toNativeUtf8().cast(), variableOutSlot);
   }
 }

@@ -12,5 +12,4 @@ build/
 # Directory created by dartdoc
 doc/api/
 
-# wren library for testing
-wren/
+bin/wren/*.dll
