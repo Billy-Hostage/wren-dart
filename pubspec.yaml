@@ -3,7 +3,7 @@ description: Dart wrappers for Wren
 version: 0.3.0
 repository: https://github.com/Billy-Hostage/wren-dart
 environment:
-  sdk: '>=3.0.0 <=3.1.0'
+  sdk: '>=3.0.0'
 
 dependencies:
   ffi: ^2.0.0
