@@ -4,6 +4,11 @@ import 'package:ffi/ffi.dart';
 import 'package:wren_dart/src/enums.dart';
 import './generated_bindings.dart';
 
+late WrenBindings g_Bindings;
+void loadWrenLib(DynamicLibrary lib) {
+  g_Bindings = WrenBindings(lib);
+}
+
 class Configuration {
   WrenReallocateFn? reallocFn;
   WrenResolveModuleFn? resolveModuleFn;
@@ -23,38 +28,49 @@ class Configuration {
       this.bindForeignClassFn});
 }
 
-class VM {
-  late Pointer<WrenVM> _ptrVm;
-  late WrenBindings _bindings;
+class DWrenVM {
+  static Map<Pointer<WrenVM>, DWrenVM> _instanceList = {};
+  static DWrenVM? fromPtr(Pointer<WrenVM> ptr) {
+    if (_instanceList.containsKey(ptr)) {
+      return _instanceList[ptr];
+    }
+    return null;
+  }
 
-  VM(DynamicLibrary lib, Configuration config) {
-    _bindings = WrenBindings(lib);
+  late Pointer<WrenVM> _ptrVm;
+
+  DWrenVM(Configuration config) {
     var wrenConfig = calloc<WrenConfiguration>();
-    _bindings.wrenInitConfiguration(wrenConfig);
+    g_Bindings.wrenInitConfiguration(wrenConfig);
     if (config.writeFn != null) {
       wrenConfig.ref.writeFn = config.writeFn!;
     }
     if (config.errFn != null) {
       wrenConfig.ref.errorFn = config.errFn!;
     }
-    _ptrVm = _bindings.wrenNewVM(wrenConfig);
+    if (config.bindForeignMethodFn != null) {
+      wrenConfig.ref.bindForeignMethodFn = config.bindForeignMethodFn!;
+    }
+    _ptrVm = g_Bindings.wrenNewVM(wrenConfig);
+    _instanceList[_ptrVm] = this;
   }
 
   /// Runs [source], a string of Wren source code in a new fiber in this VM in the
   /// context of resolved [moduleName].
   int interpret(String moduleName, String source) {
-    return _bindings.wrenInterpret(
+    return g_Bindings.wrenInterpret(
         _ptrVm, moduleName.toNativeUtf8().cast(), source.toNativeUtf8().cast());
   }
 
   /// Frees the memory used by the VM. It shouldn't be used after this
   void free() {
-    _bindings.wrenFreeVM(_ptrVm);
+    _instanceList.remove(_ptrVm);
+    g_Bindings.wrenFreeVM(_ptrVm);
   }
 
   /// Immediately run the garbage collector to free unused memory.
   void collectGarbage() {
-    _bindings.wrenCollectGarbage(_ptrVm);
+    g_Bindings.wrenCollectGarbage(_ptrVm);
   }
 
   ///Ensures that the foreign method stack has at least [numSlots] available for
@@ -64,20 +80,20 @@ class VM {
   ///
   /// It is an error to call this from a finalizer.
   void ensureSlots(int numSlots) {
-    _bindings.wrenEnsureSlots(_ptrVm, numSlots);
+    g_Bindings.wrenEnsureSlots(_ptrVm, numSlots);
   }
 
   /// Returns the number of slots available to the current foreign method.
-  int get slotCount => _bindings.wrenGetSlotCount(_ptrVm);
+  int get slotCount => g_Bindings.wrenGetSlotCount(_ptrVm);
 
   /// Stores the [T] (double, bool or String) typed [value] in slot [index].
   void setSlot<T>(int index, T value) {
     if (T == double) {
-      _bindings.wrenSetSlotDouble(_ptrVm, index, value as double);
+      g_Bindings.wrenSetSlotDouble(_ptrVm, index, value as double);
     } else if (T == bool) {
-      _bindings.wrenSetSlotBool(_ptrVm, index, value as bool);
+      g_Bindings.wrenSetSlotBool(_ptrVm, index, value as bool);
     } else if (T == String) {
-      _bindings.wrenSetSlotBytes(
+      g_Bindings.wrenSetSlotBytes(
           _ptrVm, index, (value as String).toNativeUtf8().cast(), value.length);
     } else {
       throw ArgumentError('Invalid type for setSlot');
@@ -86,22 +102,22 @@ class VM {
 
   /// Sets the slot at [index] to null
   void setSlotNull(int index) {
-    _bindings.wrenSetSlotNull(_ptrVm, index);
+    g_Bindings.wrenSetSlotNull(_ptrVm, index);
   }
 
   /// Stores a new empty list at [index].
   void setSlotNewList(int index) {
-    _bindings.wrenSetSlotNewList(_ptrVm, index);
+    g_Bindings.wrenSetSlotNewList(_ptrVm, index);
   }
 
   /// Stores a new empty map at [index].
   void setSlotNewMap(int index) {
-    _bindings.wrenSetSlotNewMap(_ptrVm, index);
+    g_Bindings.wrenSetSlotNewMap(_ptrVm, index);
   }
 
   /// Gets the type of the slot at [index]
   WType getSlotType(int index) {
-    return WType.values[_bindings.wrenGetSlotType(_ptrVm, index)];
+    return WType.values[g_Bindings.wrenGetSlotType(_ptrVm, index)];
   }
 
   /// Gets the value of the slot at [index] as a [T] (double, bool or String)
@@ -110,17 +126,17 @@ class VM {
       if (getSlotType(index) != WType.number) {
         throw TypeError();
       }
-      return _bindings.wrenGetSlotDouble(_ptrVm, index) as T;
+      return g_Bindings.wrenGetSlotDouble(_ptrVm, index) as T;
     } else if (T == bool) {
       if (getSlotType(index) != WType.boolean) {
         throw TypeError();
       }
-      return _bindings.wrenGetSlotBool(_ptrVm, index) as T;
+      return g_Bindings.wrenGetSlotBool(_ptrVm, index) as T;
     } else if (T == String) {
       if (getSlotType(index) != WType.string) {
         throw TypeError();
       }
-      return _bindings
+      return g_Bindings
           .wrenGetSlotString(_ptrVm, index)
           .cast<Utf8>()
           .toDartString() as T;
@@ -132,7 +148,7 @@ class VM {
   /// Looks up the top level variable with [name] in resolved [module] and stores
   /// it in [variableOutSlot].
   void getVariable(String module, String name, int variableOutSlot) {
-    _bindings.wrenGetVariable(_ptrVm, module.toNativeUtf8().cast(),
+    g_Bindings.wrenGetVariable(_ptrVm, module.toNativeUtf8().cast(),
         name.toNativeUtf8().cast(), variableOutSlot);
   }
 }

@@ -18,9 +18,12 @@ var list_ll = []
 var random = Random.new()
 System.write(random.float())
 
-var count = 1000
+var count = 3
+var temp_o = 0
 while (count != 0) {
     count = count - 1
-    list_ll.add(random.float())
+    temp_o = random.float()
+    list_ll.add(temp_o)
+    System.write(temp_o)
 }
 System.write(list_ll.count)
