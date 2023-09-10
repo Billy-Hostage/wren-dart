@@ -4,40 +4,34 @@ import 'package:ffi/ffi.dart';
 import 'package:wren_dart/src/enums.dart';
 import './generated_bindings.dart';
 
+final FFI_NULL_PTR = Pointer.fromAddress(0);
 late WrenBindings g_Bindings;
 void loadWrenLib(DynamicLibrary lib) {
   g_Bindings = WrenBindings(lib);
 }
 
+typedef ManagedLoadModuleSourceFn = String? Function(DWrenVM dwvm, String name);
+typedef ExternalDartFunctionResolverFn = WrenForeignMethodFn? Function(
+    String moduleName, String className, String signiture);
+
 class Configuration {
-  WrenReallocateFn? reallocFn;
-  WrenResolveModuleFn? resolveModuleFn;
-  WrenLoadModuleFn? loadModuleFn;
-  WrenBindForeignMethodFn? bindForeignMethodFn;
-  WrenBindForeignClassFn? bindForeignClassFn;
+  ManagedLoadModuleSourceFn? managedloadModuleSourceFn;
   WrenWriteFn? writeFn;
   WrenErrorFn? errFn;
 
-  Configuration(
-      {this.writeFn,
-      this.errFn,
-      this.reallocFn,
-      this.resolveModuleFn,
-      this.loadModuleFn,
-      this.bindForeignMethodFn,
-      this.bindForeignClassFn});
+  Configuration({
+    this.writeFn,
+    this.errFn,
+    this.managedloadModuleSourceFn,
+  });
 }
 
 class DWrenVM {
-  static Map<Pointer<WrenVM>, DWrenVM> _instanceList = {};
-  static DWrenVM? fromPtr(Pointer<WrenVM> ptr) {
-    if (_instanceList.containsKey(ptr)) {
-      return _instanceList[ptr];
-    }
-    return null;
-  }
-
   late Pointer<WrenVM> _ptrVm;
+  Map<String, Pointer> _moduleLoadRespCache = {};
+
+  ManagedLoadModuleSourceFn? _loadModuleSourceFn = null;
+  List<ExternalDartFunctionResolverFn> _resolverList = [];
 
   DWrenVM(Configuration config) {
     var wrenConfig = calloc<WrenConfiguration>();
@@ -48,11 +42,21 @@ class DWrenVM {
     if (config.errFn != null) {
       wrenConfig.ref.errorFn = config.errFn!;
     }
-    if (config.bindForeignMethodFn != null) {
-      wrenConfig.ref.bindForeignMethodFn = config.bindForeignMethodFn!;
+
+    if (config.managedloadModuleSourceFn != null) {
+      _loadModuleSourceFn = config.managedloadModuleSourceFn!;
     }
+    wrenConfig.ref.loadModuleFn =
+        Pointer.fromFunction(DWrenVM._managedLoadModule);
+
+    wrenConfig.ref.bindForeignMethodFn =
+        Pointer.fromFunction(DWrenVM._bindExternalFunc);
+
     _ptrVm = g_Bindings.wrenNewVM(wrenConfig);
+
     _instanceList[_ptrVm] = this;
+    // safe to free config
+    calloc.free(wrenConfig);
   }
 
   /// Runs [source], a string of Wren source code in a new fiber in this VM in the
@@ -150,5 +154,69 @@ class DWrenVM {
   void getVariable(String module, String name, int variableOutSlot) {
     g_Bindings.wrenGetVariable(_ptrVm, module.toNativeUtf8().cast(),
         name.toNativeUtf8().cast(), variableOutSlot);
+  }
+
+  void bindResolver(ExternalDartFunctionResolverFn r) {
+    if (!_resolverList.contains(r)) {
+      _resolverList.add(r);
+    }
+  }
+
+  static Map<Pointer<WrenVM>, DWrenVM> _instanceList = {};
+  static DWrenVM? fromPtr(Pointer<WrenVM> ptr) {
+    if (_instanceList.containsKey(ptr)) {
+      return _instanceList[ptr];
+    }
+    return null;
+  }
+
+  static WrenLoadModuleResult _managedLoadModule(
+      Pointer<WrenVM> vm, Pointer<Char> name) {
+    var dwvm = DWrenVM.fromPtr(vm)!;
+    var mName = name.cast<Utf8>().toDartString();
+    var out = calloc<WrenLoadModuleResult>();
+    dwvm._moduleLoadRespCache[mName] = out;
+
+    if (dwvm._loadModuleSourceFn != null) {
+      var src = dwvm._loadModuleSourceFn!(dwvm, mName);
+      if (src != null) {
+        out.ref.source = src.toNativeUtf8().cast();
+        out.ref.onComplete =
+            Pointer.fromFunction(DWrenVM._managedLoadModuleCompleted);
+      }
+    }
+
+    return out.ref;
+  }
+
+  static void _managedLoadModuleCompleted(
+      Pointer<WrenVM> vm, Pointer<Char> name, WrenLoadModuleResult result) {
+    var dwvm = DWrenVM.fromPtr(vm)!;
+    var dstrname = name.cast<Utf8>().toDartString();
+
+    // free src first
+    calloc.free(result.source);
+    // free result struct
+    calloc.free(dwvm._moduleLoadRespCache[dstrname]!);
+    dwvm._moduleLoadRespCache.remove(dstrname);
+  }
+
+  static WrenForeignMethodFn _bindExternalFunc(
+      Pointer<WrenVM> vm,
+      Pointer<Char> module,
+      Pointer<Char> className,
+      bool isStatic,
+      Pointer<Char> signature) {
+    var dwvm = DWrenVM.fromPtr(vm)!;
+    var dart_moduleName = module.cast<Utf8>().toDartString();
+    var dart_className = className.cast<Utf8>().toDartString();
+    var dart_signature = signature.cast<Utf8>().toDartString();
+
+    for (var reolver in dwvm._resolverList) {
+      var out = reolver(dart_moduleName, dart_className, dart_signature);
+      if (out != null && out.address != 0) return out;
+    }
+
+    return FFI_NULL_PTR.cast();
   }
 }
